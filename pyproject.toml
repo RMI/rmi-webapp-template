@@ -1,0 +1,18 @@
+[project]
+name = "webapp"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+
+[tool.uv.workspace]
+members = [
+  "deployments/api",
+  "packages/auth",
+]
+
+[tool.uv.sources]
+auth = { workspace = true }
+
+[dependency-groups]
+dev = ["pytest>=8.4.2", "ruff>=0.14.2"]

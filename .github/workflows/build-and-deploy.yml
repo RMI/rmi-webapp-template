@@ -1,0 +1,225 @@
+name: CD Pipeline
+
+on:
+  pull_request:
+  push:
+    branches: [main, production]
+  workflow_dispatch:
+
+jobs:
+  resolve-context:
+    uses: ./.github/workflows/resolve-deployment-context.yml
+
+  lane-config-validate:
+    name: Resolve lane config
+    needs: [resolve-context]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-context.outputs.deployment-lane }}
+    outputs:
+      frontend-origin-url: ${{ steps.compute.outputs.frontend-origin-url }}
+      auth-disabled: ${{ steps.export-auth.outputs.auth-disabled }}
+      auth-issuer: ${{ steps.export-auth.outputs.auth-issuer }}
+      auth-audience: ${{ steps.export-auth.outputs.auth-audience }}
+      auth-jwks-uri: ${{ steps.export-auth.outputs.auth-jwks-uri }}
+      auth0-domain: ${{ steps.export-auth.outputs.auth0-domain }}
+      auth0-client-id: ${{ steps.export-auth.outputs.auth0-client-id }}
+      auth0-audience: ${{ steps.export-auth.outputs.auth0-audience }}
+    env:
+      FRONTEND_PRODUCTION_URL: ${{ vars.FRONTEND_PRODUCTION_URL }}
+      FRONTEND_PREVIEW_URL_TEMPLATE: ${{ vars.FRONTEND_PREVIEW_URL_TEMPLATE }}
+      AUTH_DISABLED: ${{ vars.AUTH_DISABLED }}
+      AUTH_ISSUER: ${{ vars.AUTH_ISSUER }}
+      AUTH_AUDIENCE: ${{ vars.AUTH_AUDIENCE }}
+      AUTH_JWKS_URI: ${{ vars.AUTH_JWKS_URI }}
+      AUTH0_DOMAIN: ${{ vars.AUTH0_DOMAIN }}
+      AUTH0_CLIENT_ID: ${{ vars.AUTH0_CLIENT_ID }}
+      AUTH0_AUDIENCE: ${{ vars.AUTH0_AUDIENCE }}
+      APP_USER_PASSWORD: ${{ secrets.APP_USER_PASSWORD }}
+    steps:
+      - name: Validate lane variables
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${FRONTEND_PRODUCTION_URL:?Missing required variable FRONTEND_PRODUCTION_URL}"
+          : "${FRONTEND_PREVIEW_URL_TEMPLATE:?Missing required variable FRONTEND_PREVIEW_URL_TEMPLATE}"
+          : "${AUTH_DISABLED:?Missing required variable AUTH_DISABLED}"
+          : "${AUTH0_DOMAIN:?Missing required variable AUTH0_DOMAIN}"
+          : "${AUTH0_CLIENT_ID:?Missing required variable AUTH0_CLIENT_ID}"
+          : "${AUTH0_AUDIENCE:?Missing required variable AUTH0_AUDIENCE}"
+          : "${APP_USER_PASSWORD:?Missing required secret APP_USER_PASSWORD}"
+
+          case "${AUTH_DISABLED}" in
+            true|false) ;;
+            *)
+              echo "Invalid AUTH_DISABLED: '${AUTH_DISABLED}'. Expected 'true' or 'false'." >&2
+              exit 1
+              ;;
+          esac
+
+          if [ "${AUTH_DISABLED}" = "false" ]; then
+            : "${AUTH_ISSUER:?Missing required variable AUTH_ISSUER}"
+            : "${AUTH_AUDIENCE:?Missing required variable AUTH_AUDIENCE}"
+            : "${AUTH_JWKS_URI:?Missing required variable AUTH_JWKS_URI}"
+          fi
+
+      - name: Compute frontend origin
+        id: compute
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          TARGET_NAME: ${{ needs.resolve-context.outputs.deployment-name }}
+          DEPLOYMENT_LANE: ${{ needs.resolve-context.outputs.deployment-lane }}
+        run: |
+          set -euo pipefail
+
+          if [ "${DEPLOYMENT_LANE}" = "dress-rehearsal" ]; then
+            frontend_origin_url="${FRONTEND_PRODUCTION_URL}"
+          elif [ "${EVENT_NAME}" = "pull_request" ]; then
+            frontend_origin_url="${FRONTEND_PREVIEW_URL_TEMPLATE//\{name\}/${PR_NUMBER}}"
+          else
+            frontend_origin_url="${FRONTEND_PREVIEW_URL_TEMPLATE//\{name\}/${TARGET_NAME}}"
+          fi
+
+          echo "frontend-origin-url=$frontend_origin_url" >> "$GITHUB_OUTPUT"
+
+      - name: Export auth config
+        id: export-auth
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "auth-disabled=${AUTH_DISABLED}" >> "$GITHUB_OUTPUT"
+          echo "auth-issuer=${AUTH_ISSUER}" >> "$GITHUB_OUTPUT"
+          echo "auth-audience=${AUTH_AUDIENCE}" >> "$GITHUB_OUTPUT"
+          echo "auth-jwks-uri=${AUTH_JWKS_URI}" >> "$GITHUB_OUTPUT"
+          echo "auth0-domain=${AUTH0_DOMAIN}" >> "$GITHUB_OUTPUT"
+          echo "auth0-client-id=${AUTH0_CLIENT_ID}" >> "$GITHUB_OUTPUT"
+          echo "auth0-audience=${AUTH0_AUDIENCE}" >> "$GITHUB_OUTPUT"
+
+  build-frontend:
+    name: "Build frontend"
+    needs: [resolve-context]
+    uses: ./.github/workflows/node-build.yml
+    secrets: inherit
+
+  build-api-docker-image:
+    name: "Build and publish API"
+    needs: [resolve-context]
+    uses: ./.github/workflows/build-and-push-Docker-image.yml
+    secrets: inherit
+    permissions:
+      packages: write
+      contents: read
+    with:
+      dockerfile: deployments/api/Dockerfile
+      image-name: ${{ github.event.repository.name }}-api
+      image-tag: ${{ needs.resolve-context.outputs.deployment-name }}
+
+  check-db-migrations:
+    name: "Check DB Migrations (clean)"
+    needs: [build-api-docker-image]
+    uses: ./.github/workflows/check-alembic.yml
+    permissions:
+      contents: read
+      packages: read
+    with:
+      full-image-name: ${{ needs.build-api-docker-image.outputs.digest-image-name }}
+
+  deploy-db:
+    name: "Create DB"
+    needs: [resolve-context]
+    uses: ./.github/workflows/deploy-db.yml
+    secrets:
+      pgpassword: ${{ secrets.PGPASSWORD }}
+      app-migrator-password: ${{ secrets.APP_MIGRATOR_PASSWORD }}
+      app-user-password: ${{ secrets.APP_USER_PASSWORD }}
+    with:
+      deployment-lane: ${{ needs.resolve-context.outputs.deployment-lane }}
+      deployment-name: ${{ needs.resolve-context.outputs.deployment-name }}
+
+  run-db-migrations:
+    name: "Run DB Migrations"
+    needs: [resolve-context, build-api-docker-image, deploy-db]
+    uses: ./.github/workflows/run-alembic.yml
+    secrets:
+      app-migrator-password: ${{ secrets.APP_MIGRATOR_PASSWORD }}
+    with:
+      deployment-lane: ${{ needs.resolve-context.outputs.deployment-lane }}
+      full-image-name: ${{ needs.build-api-docker-image.outputs.digest-image-name }}
+      postgres-host: ${{ needs.deploy-db.outputs.postgres-host }}
+      postgres-port: ${{ needs.deploy-db.outputs.postgres-port }}
+      postgres-db: ${{ needs.deploy-db.outputs.postgres-db }}
+      postgres-sslmode: ${{ needs.deploy-db.outputs.postgres-sslmode }}
+
+  check-db-migrations-live:
+    name: "Check DB Migrations (live)"
+    needs: [resolve-context, build-api-docker-image, deploy-db, run-db-migrations]
+    uses: ./.github/workflows/check-alembic.yml
+    permissions:
+      contents: read
+      packages: read
+    secrets:
+      app-user-password: ${{ secrets.APP_USER_PASSWORD }}
+    with:
+      full-image-name: ${{ needs.build-api-docker-image.outputs.digest-image-name }}
+      deployment-lane: ${{ needs.resolve-context.outputs.deployment-lane }}
+      postgres-host: ${{ needs.deploy-db.outputs.postgres-host }}
+      postgres-port: ${{ needs.deploy-db.outputs.postgres-port }}
+      postgres-db: ${{ needs.deploy-db.outputs.postgres-db }}
+      postgres-sslmode: ${{ needs.deploy-db.outputs.postgres-sslmode }}
+
+  deploy-api:
+    name: "Deploy API"
+    needs: [resolve-context, lane-config-validate, build-api-docker-image, deploy-db, run-db-migrations]
+    uses: ./.github/workflows/deploy-container.yml
+    secrets:
+      azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+      azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+      azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      app-user-password: ${{ secrets.APP_USER_PASSWORD }}
+    with:
+      deployment-lane: ${{ needs.resolve-context.outputs.deployment-lane }}
+      full-image-name: ${{ needs.build-api-docker-image.outputs.digest-image-name }}
+      container-app-name: ${{ format('{0}-api', needs.resolve-context.outputs.deployment-name) }}
+      environment-variables: >-
+        LOG_LEVEL=debug
+        FRONTEND_ORIGIN_URL=${{ needs.lane-config-validate.outputs.frontend-origin-url }}
+        AUTH_DISABLED=${{ needs.lane-config-validate.outputs.auth-disabled }}
+        DEPLOYMENT_LANE=${{ needs.resolve-context.outputs.deployment-lane }}
+        DEPLOYMENT_NAME=${{ needs.resolve-context.outputs.deployment-name }}
+        ENVIRONMENT=${{ needs.resolve-context.outputs.deployment-name }}
+        AUTH_ISSUER=${{ needs.lane-config-validate.outputs.auth-issuer }}
+        AUTH_AUDIENCE=${{ needs.lane-config-validate.outputs.auth-audience }}
+        AUTH_JWKS_URI=${{ needs.lane-config-validate.outputs.auth-jwks-uri }}
+        POSTGRES_HOST=${{ needs.deploy-db.outputs.postgres-host }}
+        POSTGRES_PORT=${{ needs.deploy-db.outputs.postgres-port }}
+        POSTGRES_DB=${{ needs.deploy-db.outputs.postgres-db }}
+        POSTGRES_USER=${{ needs.deploy-db.outputs.postgres-user }}
+        PGSSLMODE=${{ needs.deploy-db.outputs.postgres-sslmode }}
+      deployment-label: api
+      # Keep staging / dress-rehearsal always-on; development scales to zero.
+      min-replicas: ${{ needs.resolve-context.outputs.deployment-lane != 'development' && '1' || '' }}
+
+  deploy-frontend:
+    name: "Deploy frontend"
+    if: ${{ !failure() && !cancelled() }}
+    needs: [resolve-context, lane-config-validate, build-frontend, deploy-api]
+    uses: ./.github/workflows/azure-static-web-apps.yml
+    secrets:
+      azure-static-web-apps-deploy-token: ${{ secrets.AZURE_STATIC_WEB_APPS_DEPLOY_TOKEN }}
+    with:
+      deployment-lane: ${{ needs.resolve-context.outputs.deployment-lane }}
+      artifact-name: dist-tgz
+      deployment-name: ${{ needs.resolve-context.outputs.deployment-name }}
+      api-url: ${{ format('{0}/api/v1', needs.deploy-api.outputs.container-app-url) }}
+      auth-disabled: ${{ needs.lane-config-validate.outputs.auth-disabled }}
+      auth0-domain: ${{ needs.lane-config-validate.outputs.auth0-domain }}
+      auth0-client-id: ${{ needs.lane-config-validate.outputs.auth0-client-id }}
+      auth0-audience: ${{ needs.lane-config-validate.outputs.auth0-audience }}
+      production-branch: production
+
+  comment-summary:
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    uses: ./.github/workflows/comment-pr-summary.yml
+    secrets: inherit
+    needs: [resolve-context, build-api-docker-image, deploy-db, run-db-migrations, deploy-api, deploy-frontend]

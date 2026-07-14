@@ -1,0 +1,106 @@
+services:
+
+  api:
+    build:
+      context: .
+      dockerfile: deployments/api/Dockerfile
+      args:
+        APP_VERSION: ${API_APP_VERSION:-0.1.0}
+        BUILD_ID: ${API_BUILD_ID:-docker-local}
+        GIT_SHA: ${API_GIT_SHA:-unknown}
+        BUILD_TIME: ${API_BUILD_TIME:-unknown}
+    env_file:
+      - .env
+    environment:
+      LOG_LEVEL: ${API_LOG_LEVEL:-info}
+      # API connects as the app role (no DDL)
+      POSTGRES_USER: app_user
+      POSTGRES_PASSWORD: ${APP_USER_PASSWORD:?APP_USER_PASSWORD must be set in .env}
+      # OpenTelemetry config (OTEL_*) comes from .env via env_file, shared with
+      # every service. `make reboot-docker-heavy` overrides the exporter to otlp
+      # (see docker-compose.otel.yml).
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=2).read()\" || exit 1"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+      start_interval: 1s
+    ports:
+      - "8000:8000"
+    profiles: ["api", "full"]
+    depends_on:
+      db:
+        condition: service_healthy
+      alembic:
+        condition: service_completed_successfully
+
+  db:
+    image: postgres:17-alpine
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-app} || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+      start_interval: 1s
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./deployments/db/00-init-roles.sh:/docker-entrypoint-initdb.d/00-init-roles.sh:ro
+
+  alembic:
+    build:
+      context: .
+      dockerfile: deployments/api/Dockerfile
+      args:
+        APP_VERSION: ${API_APP_VERSION:-0.1.0}
+        BUILD_ID: ${API_BUILD_ID:-docker-local}
+        GIT_SHA: ${API_GIT_SHA:-unknown}
+        BUILD_TIME: ${API_BUILD_TIME:-unknown}
+    read_only: true
+    env_file:
+      - .env
+    environment:
+      LOG_LEVEL: ${DBINIT_LOG_LEVEL:-info}
+      # Alembic migrator connects as the DDL role.
+      POSTGRES_USER: app_migrator
+      POSTGRES_PASSWORD: ${APP_MIGRATOR_PASSWORD:?APP_MIGRATOR_PASSWORD must be set in .env}
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["alembic", "-c", "deployments/api/alembic.ini", "upgrade", "head"]
+    restart: "no"
+
+  frontend:
+    build:
+      context: deployments/frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_APP_VERSION: ${VITE_APP_VERSION:-0.0.0-dev}
+        VITE_BUILD_ID: ${VITE_BUILD_ID:-docker-local}
+        VITE_GIT_SHA: ${VITE_GIT_SHA:-unknown}
+        VITE_NODE_VERSION: ${VITE_NODE_VERSION:-20}
+        VITE_BUILD_TIME: ${VITE_BUILD_TIME:-unknown}
+        VITE_VITE_VERSION: ${VITE_VITE_VERSION:-}
+        VITE_USE_MOCK_DATA: ${VITE_USE_MOCK_DATA:-false}
+    ports:
+      - "3000:80"
+    profiles: ["frontend", "full"]
+
+volumes:
+  db_data:

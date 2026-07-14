@@ -1,0 +1,63 @@
+on:
+  workflow_call:
+
+jobs:
+  build-frontend:
+    name: "Build Frontend"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: deployments/frontend/package.json
+          cache: "npm"
+          cache-dependency-path: deployments/frontend/package-lock.json
+
+      - name: Compute frontend build metadata
+        run: |
+          APP_VERSION=$(node -p "require('./deployments/frontend/package.json').version")
+          BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          GIT_SHA="${GITHUB_SHA}"
+          BUILD_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          NODE_VERSION=$(node -p "process.version")
+          VITE_VERSION=$(node -p "require('./deployments/frontend/package.json').devDependencies.vite")
+
+          echo "VITE_BUILD_TIME=${BUILD_TIME}" >> "$GITHUB_ENV"
+          echo "VITE_BUILD_TIME=${BUILD_TIME}" 
+          echo "VITE_GIT_SHA=${GIT_SHA}" >> "$GITHUB_ENV"
+          echo "VITE_GIT_SHA=${GIT_SHA}"
+          echo "VITE_BUILD_ID=${BUILD_ID}" >> "$GITHUB_ENV"
+          echo "VITE_BUILD_ID=${BUILD_ID}"
+          echo "VITE_NODE_VERSION=${NODE_VERSION}" >> "$GITHUB_ENV"
+          echo "VITE_NODE_VERSION=${NODE_VERSION}"
+          echo "VITE_VITE_VERSION=${VITE_VERSION}" >> "$GITHUB_ENV"
+          echo "VITE_VITE_VERSION=${VITE_VERSION}"
+
+      - name: Build
+        run: make frontend-build
+
+      - name: Prepare Tarball
+        run: tar -czf dist.tgz -C deployments/frontend/dist .
+
+      - name: Check for dist.tgz
+        id: check_artifact
+        shell: bash
+        run: |
+          if [[ -f dist.tgz ]]; then
+            echo "has-artifact=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-artifact=false" >> "$GITHUB_OUTPUT"
+          fi
+
+        # Reuse the artifact for downstream deploy
+      - name: Upload dist.tgz as workflow artifact
+        if: ${{ steps.check_artifact.outputs.has-artifact == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist-tgz
+          path: dist.tgz
+          if-no-files-found: error

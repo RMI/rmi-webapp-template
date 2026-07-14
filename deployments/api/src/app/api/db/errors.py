@@ -1,0 +1,16 @@
+from app.api.errors import AppAPIError
+
+
+class ResourceNotFoundError(AppAPIError): ...
+
+
+class ResourceIntegrityError(AppAPIError): ...
+
+
+class InvalidActionError(AppAPIError): ...
+
+
+class SourceNotFoundError(AppAPIError): ...
+
+
+class SourceIntegrityError(AppAPIError): ...

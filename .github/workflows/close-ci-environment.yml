@@ -1,0 +1,109 @@
+---
+name: Close CI environment
+
+on:
+  pull_request:
+    types: [closed]
+  workflow_call:
+
+jobs:
+  resolve-context:
+    uses: ./.github/workflows/resolve-deployment-context.yml
+
+  drop-db:
+    needs: [resolve-context]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-context.outputs.deployment-lane }}
+    env:
+      PGHOST: ${{ vars.POSTGRES_HOST }}
+      PGPORT: ${{ vars.POSTGRES_PORT || '5432' }}
+      PGUSER: ${{ vars.POSTGRES_ADMIN_USER || 'postgres' }}
+      PGPASSWORD: ${{ secrets.PGPASSWORD }}
+      PGSSLMODE: ${{ vars.POSTGRES_SSLMODE || 'require' }}
+      PGDATABASE: ${{ vars.POSTGRES_DEFAULT_DB || 'postgres' }}
+      DB_NAME_RAW: ${{ needs.resolve-context.outputs.deployment-name }}
+    steps:
+      - name: Validate lane config
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${PGHOST:?Missing required variable POSTGRES_HOST}"
+          : "${PGUSER:?Missing required variable POSTGRES_ADMIN_USER}"
+          : "${PGPASSWORD:?Missing required secret PGPASSWORD}"
+          case "${PGSSLMODE}" in
+            disable|allow|prefer|require|verify-ca|verify-full) ;;
+            *)
+              echo "Invalid POSTGRES_SSLMODE: '${PGSSLMODE}'. Expected one of: disable, allow, prefer, require, verify-ca, verify-full." >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Install psql client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Normalize DB name
+        id: normalize-name
+        run: |
+          set -euox pipefail
+          RAW_NAME="${DB_NAME_RAW}"
+          CLEAN=$(echo "$RAW_NAME" | tr '[:upper:]' '[:lower:]')
+          CLEAN=$(echo "$CLEAN" | sed -E 's/[^a-z0-9_]/_/g')
+          CLEAN=$(echo "$CLEAN" | cut -c1-63)
+          echo "db-name=$CLEAN" >> "$GITHUB_OUTPUT"
+
+      - name: Drop database if it exists
+        env:
+          DB_NAME: ${{ steps.normalize-name.outputs.db-name }}
+        run: |
+          set -euox pipefail
+          EXISTS=$(psql -X -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" || true)
+          if [ "$EXISTS" != "1" ]; then
+            echo "Database '$DB_NAME' does not exist. Skipping."
+            exit 0
+          fi
+          psql -X -v ON_ERROR_STOP=1 -c "
+            SELECT pg_terminate_backend(pid)
+            FROM pg_stat_activity
+            WHERE datname = '${DB_NAME}'
+              AND pid <> pg_backend_pid();
+          "
+          psql -X -v ON_ERROR_STOP=1 -c "DROP DATABASE \"${DB_NAME}\";"
+
+  delete-api-container-app:
+    name: Delete API container app
+    needs: [resolve-context]
+    uses: ./.github/workflows/delete-container-app.yml
+    secrets:
+      azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+      azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+      azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    with:
+      deployment-lane: ${{ needs.resolve-context.outputs.deployment-lane }}
+      container-app-name: ${{ format('{0}-api', needs.resolve-context.outputs.deployment-name) }}
+
+  close-static-web-app-preview:
+    needs: [resolve-context]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-context.outputs.deployment-lane }}
+    permissions:
+      checks: write
+      contents: read
+      id-token: write
+      pull-requests: write
+    steps:
+      - name: Validate lane secrets
+        shell: bash
+        env:
+          AZURE_STATIC_WEB_APPS_DEPLOY_TOKEN: ${{ secrets.AZURE_STATIC_WEB_APPS_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${AZURE_STATIC_WEB_APPS_DEPLOY_TOKEN:?Missing required secret AZURE_STATIC_WEB_APPS_DEPLOY_TOKEN}"
+
+      - name: Close Azure Static Web Apps preview
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_DEPLOY_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: "close"

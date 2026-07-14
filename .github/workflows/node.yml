@@ -1,0 +1,33 @@
+---
+on:
+  pull_request:
+    branches:
+      - main
+      - next
+      - production
+  push:
+    branches:
+      - main
+      - production
+
+name: Node Package Checks
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.event_action }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: "Tests"
+    uses: ./.github/workflows/node-test.yml
+
+  lint:
+    name: "Linting"
+    uses: ./.github/workflows/node-lint.yml
+
+  format:
+    name: "Formatting"
+    uses: ./.github/workflows/node-format.yml
+
+  build:
+    name: "Build"
+    uses: ./.github/workflows/node-build.yml
