@@ -14,7 +14,7 @@ function App() {
             to="/"
             className="inline-flex min-w-0 items-baseline gap-2 rounded-sm text-neutral-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-energy/60 focus-visible:ring-offset-4 focus-visible:ring-offset-bluespruce"
           >
-            <span className="text-lg font-semibold">Webapp</span>
+            <span className="text-lg font-semibold">Jacskon's Great Application</span>
           </Link>
 
           <LogoutButton />
