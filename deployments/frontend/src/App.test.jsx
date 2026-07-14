@@ -25,10 +25,9 @@ describe("App", () => {
 
   it("renders the app shell with a home link and logout", () => {
     renderWithQueryClient(<App />);
-    expect(screen.getByRole("link", { name: /webapp/i })).toHaveAttribute(
-      "href",
-      "/",
-    );
+    expect(
+      screen.getByRole("link", { name: /great application/i }),
+    ).toHaveAttribute("href", "/");
     expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
     expect(screen.getByRole("main")).toBeInTheDocument();
   });
