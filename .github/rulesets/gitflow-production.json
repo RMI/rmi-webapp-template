@@ -2,12 +2,14 @@
   "name": "gitflow-production",
   "target": "branch",
   "source_type": "Repository",
-  "source": "RMI/YOUR_REPO",
+  "source": "RMI/rmi-webapp-template",
   "enforcement": "active",
   "conditions": {
     "ref_name": {
       "exclude": [],
-      "include": ["refs/heads/production"]
+      "include": [
+        "refs/heads/production"
+      ]
     }
   },
   "rules": [
@@ -33,7 +35,9 @@
         },
         "require_last_push_approval": true,
         "required_review_thread_resolution": true,
-        "allowed_merge_methods": ["merge"]
+        "allowed_merge_methods": [
+          "merge"
+        ]
       }
     },
     {
@@ -42,7 +46,6 @@
         "strict_required_status_checks_policy": false,
         "do_not_enforce_on_create": false,
         "required_status_checks": [
-
           {
             "context": "Linting / Linting (frontend)",
             "integration_id": 15368
