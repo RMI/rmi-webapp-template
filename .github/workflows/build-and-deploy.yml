@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ needs.resolve-context.outputs.deployment-lane }}
     outputs:
+      configured: ${{ steps.check.outputs.configured }}
       frontend-origin-url: ${{ steps.compute.outputs.frontend-origin-url }}
       auth-disabled: ${{ steps.export-auth.outputs.auth-disabled }}
       auth-issuer: ${{ steps.export-auth.outputs.auth-issuer }}
@@ -36,7 +37,24 @@ jobs:
       AUTH0_AUDIENCE: ${{ vars.AUTH0_AUDIENCE }}
       APP_USER_PASSWORD: ${{ secrets.APP_USER_PASSWORD }}
     steps:
+      - name: Check if deployment environment is configured
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          # APP_USER_PASSWORD is the canary: if this environment-scoped secret is
+          # unset, the target GitHub Environment hasn't been wired up yet and we
+          # skip all deploy jobs. Set it (along with the other deploy vars) to
+          # opt in to deploys for this lane.
+          if [ -z "${APP_USER_PASSWORD:-}" ]; then
+            echo "::notice::Deployment environment '${{ needs.resolve-context.outputs.deployment-lane }}' is not configured (APP_USER_PASSWORD unset). Skipping deploy jobs."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Validate lane variables
+        if: steps.check.outputs.configured == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -46,7 +64,6 @@ jobs:
           : "${AUTH0_DOMAIN:?Missing required variable AUTH0_DOMAIN}"
           : "${AUTH0_CLIENT_ID:?Missing required variable AUTH0_CLIENT_ID}"
           : "${AUTH0_AUDIENCE:?Missing required variable AUTH0_AUDIENCE}"
-          : "${APP_USER_PASSWORD:?Missing required secret APP_USER_PASSWORD}"
 
           case "${AUTH_DISABLED}" in
             true|false) ;;
@@ -63,6 +80,7 @@ jobs:
           fi
 
       - name: Compute frontend origin
+        if: steps.check.outputs.configured == 'true'
         id: compute
         shell: bash
         env:
@@ -84,6 +102,7 @@ jobs:
           echo "frontend-origin-url=$frontend_origin_url" >> "$GITHUB_OUTPUT"
 
       - name: Export auth config
+        if: steps.check.outputs.configured == 'true'
         id: export-auth
         shell: bash
         run: |
@@ -127,7 +146,8 @@ jobs:
 
   deploy-db:
     name: "Create DB"
-    needs: [resolve-context]
+    needs: [resolve-context, lane-config-validate]
+    if: needs.lane-config-validate.outputs.configured == 'true'
     uses: ./.github/workflows/deploy-db.yml
     secrets:
       pgpassword: ${{ secrets.PGPASSWORD }}
@@ -139,7 +159,8 @@ jobs:
 
   run-db-migrations:
     name: "Run DB Migrations"
-    needs: [resolve-context, build-api-docker-image, deploy-db]
+    needs: [resolve-context, lane-config-validate, build-api-docker-image, deploy-db]
+    if: needs.lane-config-validate.outputs.configured == 'true'
     uses: ./.github/workflows/run-alembic.yml
     secrets:
       app-migrator-password: ${{ secrets.APP_MIGRATOR_PASSWORD }}
@@ -153,7 +174,8 @@ jobs:
 
   check-db-migrations-live:
     name: "Check DB Migrations (live)"
-    needs: [resolve-context, build-api-docker-image, deploy-db, run-db-migrations]
+    needs: [resolve-context, lane-config-validate, build-api-docker-image, deploy-db, run-db-migrations]
+    if: needs.lane-config-validate.outputs.configured == 'true'
     uses: ./.github/workflows/check-alembic.yml
     permissions:
       contents: read
@@ -171,6 +193,7 @@ jobs:
   deploy-api:
     name: "Deploy API"
     needs: [resolve-context, lane-config-validate, build-api-docker-image, deploy-db, run-db-migrations]
+    if: needs.lane-config-validate.outputs.configured == 'true'
     uses: ./.github/workflows/deploy-container.yml
     secrets:
       azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -202,7 +225,7 @@ jobs:
 
   deploy-frontend:
     name: "Deploy frontend"
-    if: ${{ !failure() && !cancelled() }}
+    if: ${{ !failure() && !cancelled() && needs.lane-config-validate.outputs.configured == 'true' }}
     needs: [resolve-context, lane-config-validate, build-frontend, deploy-api]
     uses: ./.github/workflows/azure-static-web-apps.yml
     secrets:
