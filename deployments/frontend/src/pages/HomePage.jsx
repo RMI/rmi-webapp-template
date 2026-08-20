@@ -23,7 +23,10 @@ export default function HomePage() {
 
   const createMutation = useMutation({
     mutationFn: async (payload) => {
-      const fetcher = createAuthenticatedFetcher(config, getAccessTokenSilently);
+      const fetcher = createAuthenticatedFetcher(
+        config,
+        getAccessTokenSilently,
+      );
       return createWidget(config, fetcher, payload);
     },
     onSuccess: () => {

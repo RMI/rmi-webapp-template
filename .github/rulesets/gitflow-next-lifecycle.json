@@ -3,7 +3,7 @@
   "name": "gitflow-next-lifecycle",
   "target": "branch",
   "source_type": "Repository",
-  "source": "RMI/YOUR_REPO",
+  "source": "RMI/rmi-webapp-template",
   "enforcement": "active",
   "conditions": {
     "ref_name": {

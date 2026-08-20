@@ -21,9 +21,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 os.environ.setdefault("DIALECT", "sqlite")
 os.environ.setdefault("AUTH_DISABLED", "true")
 
-from app.api.db.config import UnitOfWork, get_uow  # noqa: E402
-from app.api.db.model import Base  # noqa: E402
-from app.api.main import app  # noqa: E402
+from app.api.db.config import UnitOfWork, get_uow
+from app.api.db.model import Base
+from app.api.main import app
 
 
 @pytest.fixture

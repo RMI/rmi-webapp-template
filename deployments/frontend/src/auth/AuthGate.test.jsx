@@ -2,7 +2,11 @@ import { describe, it, expect, vi } from "vitest";
 import { screen } from "@testing-library/react";
 import { useAuth0 } from "@auth0/auth0-react";
 import { auth0TestDefaults, renderWithQueryClient } from "../test/utils";
-import { setConfigForTests, resetConfigForTests, getConfig } from "../config/env";
+import {
+  setConfigForTests,
+  resetConfigForTests,
+  getConfig,
+} from "../config/env";
 import AuthGate from "./AuthGate";
 
 describe("AuthGate", () => {
